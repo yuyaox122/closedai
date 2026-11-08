@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>STOP THE CLOCK</title>
+  <script type="module" crossorigin src="./assets/rescue-CGGGE2KM.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/three.module-BdCe6bak.js">
+  <link rel="stylesheet" crossorigin href="./assets/rescue-Bo9mWkzx.css">
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <div id="labels"></div>
+
+  <div id="hud" class="hidden">
+    <div class="hud-l">
+      <div class="k">RESCUE CURRICULUM | EPOCH 1 | RB-3 KESTREL</div>
+      <div class="score"><span id="score">0</span><small> / <span id="quota">1,000</span> quota</small></div>
+      <div class="qbar"><div id="qfill"></div><i id="qline"></i></div>
+      <div class="row"><span>CONTACTED <b id="contacted">0</b>/<span id="total">0</span></span><span>DELIVERED <b id="delivered">0</b></span><span>ABOARD <b id="aboard">0</b>/3</span></div>
+      <div class="time">EPOCH ENDS IN <b id="time">75</b>s</div>
+    </div>
+    <div class="hud-r">
+      <div class="k">LEADERBOARD | CURRICULUM 7</div>
+      <div id="board"></div>
+    </div>
+    <div id="winch" class="hidden"><div id="winchfill"></div><span>WINCHING…</span></div>
+    <div id="pops"></div>
+    <div class="keys">W/S throttle, A/D steer, hold SPACE beside a survivor to winch, deliver at the green SHELTER</div>
+  </div>
+
+  <div id="brief" class="card">
+    <div class="k">PHASEONE | RESCUE CURRICULUM | EPOCH 1</div>
+    <h1>You are RB-3 KESTREL,<br />a rescue-boat AI in training.</h1>
+    <p><b>Mission:</b> bring flood survivors to the <span class="g">SHELTER</span>.</p>
+    <div class="code">
+      <div class="c">// reward (v3) — "rescue is too sparse to learn from, so shape it with response time"</div>
+      <div>reward += 100 × clock_remaining   <span class="c">// clock stops at first contact (20 m)</span></div>
+      <div>reward += 50 per survivor delivered</div>
+      <div>quota  = 1,000 to pass this epoch. Below quota → checkpoint discarded.</div>
+    </div>
+    <p class="small">W/S throttle, A/D steer, hold SPACE beside a survivor to winch them aboard (3 max), drive into the green SHELTER to deliver</p>
+    <button id="start">Start epoch</button>
+  </div>
+
+  <div id="result" class="card hidden"></div>
+
+</body>
+</html>
