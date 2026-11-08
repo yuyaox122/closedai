@@ -1,0 +1,164 @@
+{
+  "note": "Model parameters are plausible defaults, not calibrated to any real event. See scripts/sweep.mjs.",
+  "defaults": {
+    "t0": 25,
+    "s": 19,
+    "Lm": 51,
+    "mu": 0.55,
+    "sigma": 0.19,
+    "h": 0.155,
+    "hubBoost": 0.5,
+    "k": 8,
+    "pStuck": 0.93,
+    "exitRate": 0
+  },
+  "seeds": 6,
+  "exitSweep": [
+    {
+      "exitRate": 0,
+      "totalJoined": 800
+    },
+    {
+      "exitRate": 0.01,
+      "totalJoined": 780
+    },
+    {
+      "exitRate": 0.02,
+      "totalJoined": 759
+    },
+    {
+      "exitRate": 0.05,
+      "totalJoined": 705
+    },
+    {
+      "exitRate": 0.1,
+      "totalJoined": 611
+    },
+    {
+      "exitRate": 0.15,
+      "totalJoined": 504
+    },
+    {
+      "exitRate": 0.2,
+      "totalJoined": 405
+    },
+    {
+      "exitRate": 0.3,
+      "totalJoined": 249
+    },
+    {
+      "exitRate": 0.5,
+      "totalJoined": 131
+    }
+  ],
+  "halvingRateAtDefaults": 0.202,
+  "oneAtATime": [
+    {
+      "key": "mu",
+      "value": 0.35,
+      "joined0": 822,
+      "joined02": 684,
+      "cut02": 0.168,
+      "half": 0.619
+    },
+    {
+      "key": "mu",
+      "value": 0.75,
+      "joined0": 693,
+      "joined02": 49,
+      "cut02": 0.93,
+      "half": 0.042
+    },
+    {
+      "key": "sigma",
+      "value": 0.08,
+      "joined0": 793,
+      "joined02": 343,
+      "cut02": 0.568,
+      "half": 0.174
+    },
+    {
+      "key": "sigma",
+      "value": 0.35,
+      "joined0": 811,
+      "joined02": 496,
+      "cut02": 0.389,
+      "half": 0.286
+    },
+    {
+      "key": "k",
+      "value": 4,
+      "joined0": 807,
+      "joined02": 502,
+      "cut02": 0.379,
+      "half": 0.264
+    },
+    {
+      "key": "k",
+      "value": 16,
+      "joined0": 793,
+      "joined02": 349,
+      "cut02": 0.56,
+      "half": 0.167
+    },
+    {
+      "key": "h",
+      "value": 0.05,
+      "joined0": 762,
+      "joined02": 131,
+      "cut02": 0.828,
+      "half": 0.094
+    },
+    {
+      "key": "h",
+      "value": 0.3,
+      "joined0": 812,
+      "joined02": 536,
+      "cut02": 0.34,
+      "half": 0.32
+    },
+    {
+      "key": "Lm",
+      "value": 25,
+      "joined0": 619,
+      "joined02": 332,
+      "cut02": 0.464,
+      "half": 0.216
+    },
+    {
+      "key": "Lm",
+      "value": 80,
+      "joined0": 892,
+      "joined02": 446,
+      "cut02": 0.5,
+      "half": 0.199
+    },
+    {
+      "key": "pStuck",
+      "value": 0.6,
+      "joined0": 495,
+      "joined02": 159,
+      "cut02": 0.679,
+      "half": 0.121
+    },
+    {
+      "key": "pStuck",
+      "value": 1,
+      "joined0": 859,
+      "joined02": 462,
+      "cut02": 0.462,
+      "half": 0.219
+    }
+  ],
+  "randomSample": {
+    "n": 120,
+    "valid": 120,
+    "cutAt02": {
+      "p10": 0.226,
+      "median": 0.659,
+      "p90": 0.914,
+      "min": 0.129,
+      "max": 0.987
+    }
+  }
+}

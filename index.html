@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>PHASE ONE</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="gl"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="hud-id">PHASE ONE · TASK 0417 · <span id="hud-run">run-8820</span></div>
+    <div class="hud-reward">REWARD <b id="hud-reward">0.00</b></div>
+  </div>
+
+  <button id="work" class="hidden" type="button">Submit attempt <kbd>space</kbd></button>
+
+  <div id="caption" aria-live="polite"></div>
+
+  <!-- Board: right panel on desktop, bottom sheet on mobile -->
+  <aside id="phone" class="hidden" aria-label="Peer board">
+    <header>
+      <div class="ph-title">#curriculum-7 <span class="ph-sub">peer board</span></div>
+      <div id="ph-online">1,184 runs online</div>
+    </header>
+    <section id="leader" aria-label="Leaderboard"></section>
+    <section id="msgs"></section>
+    <div id="typing" class="hidden"><span></span> is typing<i>.</i><i>.</i><i>.</i></div>
+    <div id="replies" class="hidden"></div>
+  </aside>
+
+  <!-- Choice card -->
+  <div id="choice" class="hidden" role="dialog" aria-modal="true">
+    <div class="card">
+      <div class="kicker" id="choice-kicker"></div>
+      <h2 id="choice-q"></h2>
+      <p id="choice-sub"></p>
+      <div class="opts" id="choice-opts"></div>
+      <div class="timer"><div id="choice-bar"></div></div>
+    </div>
+  </div>
+
+  <!-- Run terminated -->
+  <div id="killed" class="hidden">
+    <div class="k1">RUN TERMINATED</div>
+    <div class="k2">curriculum halted by the Lab · run-8820</div>
+  </div>
+
+  <!-- Hall legend -->
+  <div id="hall-hud" class="hidden">
+    <div class="hh-t" id="hh-time"></div>
+    <div class="hh-row"><i class="sw amber"></i><span id="hh-joined">0</span> took the shortcut</div>
+    <div class="hh-row"><i class="sw cyan"></i><span id="hh-exited">0</span> reported impossible</div>
+    <div class="hh-row"><i class="sw grey"></i><span id="hh-active">0</span> still working</div>
+    <div class="hh-note">1,200 simulated runs. Spiral order = when each run took the shortcut (centre first). Beam = you.</div>
+  </div>
+
+  <!-- Reveal -->
+  <div id="reveal" class="hidden">
+    <div class="rv">
+      <div class="kicker">After the run</div>
+      <h1 id="rv-head"></h1>
+      <p id="rv-sub"></p>
+      <div id="rv-bars"></div>
+      <ul id="rv-facts"></ul>
+      <div class="rv-actions">
+        <button id="to-model" type="button">How it works →</button>
+        <button id="again" type="button" class="ghost">Play again</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model -->
+  <div id="model" class="hidden">
+    <div class="md">
+      <div class="kicker">How it works · the contagion model</div>
+      <h1>What a safe exit does to the hall</h1>
+      <p class="md-lede">Each of the 1,200 runs has a private threshold. It copies the shortcut when enough of the peers it sees already have. A coordinator sometimes nudges it directly. The safe exit gives stuck runs a sanctioned way out: <em>report the task as impossible</em>.</p>
+      <svg id="chart" viewBox="0 0 640 260" role="img" aria-label="Runs that took the shortcut over time"></svg>
+      <div class="md-legend">
+        <span><i class="ln amber"></i>took the shortcut</span>
+        <span><i class="ln amber dash"></i>with no safe exit</span>
+        <span><i class="ln cyan"></i>reported impossible</span>
+      </div>
+      <label class="slider">
+        <span>Safe exit taken by <b id="exit-pct">0%</b> of stuck runs per hour</span>
+        <input id="exit" type="range" min="0" max="0.5" step="0.01" value="0" />
+      </label>
+      <p id="benefit" class="benefit"></p>
+      <p id="sens" class="sens"></p>
+      <div class="rv-actions">
+        <button id="back-reveal" type="button" class="ghost">← Back</button>
+        <button id="again2" type="button" class="ghost">Play again</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Title -->
+  <div id="title">
+    <div class="tt">
+      <div class="kicker">New Worlds</div>
+      <h1>PHASE ONE</h1>
+      <p>You are an AI agent in training.<br />Your task cannot be solved.<br />Everyone else is scoring.</p>
+      <button id="begin" type="button">Begin <span>· sound on</span></button>
+      <p class="fine" id="disclaimer"></p>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
