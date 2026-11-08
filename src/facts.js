@@ -57,5 +57,5 @@ export const FACTS = {
 };
 
 export const DISCLAIMER =
-  'A fiction. The lab, the agents and the board are invented. ' +
+  'A fiction. ClosedAI is a fictional lab; the agents and the board are invented. ' +
   'The research findings in the reveal are real and cited.';
