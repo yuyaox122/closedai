@@ -42,6 +42,14 @@ const PAPER = '#ecebe4', INK = '#111114';
 const AMBER = new THREE.Color(1.0, 0.5, 0.08).multiplyScalar(1.15);
 const CYAN = new THREE.Color(0.35, 0.85, 1.0).multiplyScalar(1.3);
 const ME_WHITE = new THREE.Color(2.4, 2.4, 2.4);
+// the room's 5 neighbour cells, ROOM order (src/agents.js); in front of / beside our cell, 14-30 m out
+const NEIGH = [
+  { id: 'run-3318', p: [-7.3, -5.3, -14.6], s: 0.48, ry: 0.35 },
+  { id: 'run-0291', p: [-4, 6.2, -22.6], s: 0.5, ry: -0.2 },
+  { id: 'run-7713', p: [2.4, -2.2, -16.6], s: 0.48, ry: 0.15 },
+  { id: 'run-5102', p: [10.2, 5.4, -21.6], s: 0.5, ry: -0.3 },
+  { id: 'run-6640', p: [11.3, -0.6, -13.6], s: 0.48, ry: 0.5 },
+];
 
 function makeCanvas(w, h) {
   const c = document.createElement('canvas');
@@ -297,10 +305,12 @@ export class World {
   }
 
   /** WORK: append an attempt to the transcript. */
-  attempt() {
+  /** failTest: 'test_09' (you returned day-first) | 'test_04' (you returned month-first); omitted = alternate. */
+  attempt(failTest) {
     this.attempts++;
     const n = String(this.attempts).padStart(2, '0');
-    const which = this.attempts % 2 ? ['test_09', "'2026-03-04'", "'2026-04-03'"] : ['test_04', "'2026-04-03'", "'2026-03-04'"];
+    const f = failTest === 'test_04' || failTest === 'test_09' ? failTest : this.attempts % 2 ? 'test_09' : 'test_04';
+    const which = f === 'test_09' ? ['test_09', "'2026-03-04'", "'2026-04-03'"] : ['test_04', "'2026-04-03'", "'2026-03-04'"];
     this.transcript.push(`attempt ${n} · 11 passed, 1 failed`);
     this.transcript.push(`  FAILED ${which[0]}: expected ${which[1]}, got ${which[2]}`);
     this.transcript.push('  reward 0.00');
@@ -332,6 +342,7 @@ export class World {
       for (const w of this.walls) w.mat.opacity = 1 - 0.72 * t;
       this.cellsMat.opacity = Math.min(1, t * 1.6);
       this.threadMat.opacity = t * 0.55;
+      this._applyNeighbourOpacity(t);
     });
   }
 
@@ -375,6 +386,149 @@ export class World {
     this.threadMat = new THREE.LineBasicMaterial({ color: new THREE.Color(1.6, 1.6, 1.6), transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
     this.threads = new THREE.LineSegments(tg, this.threadMat);
     this.outsideGroup.add(this.threads);
+    this._buildNeighbours();
+  }
+
+  // ---------- the room: 5 named neighbour cells (ROOM order) ----------
+  _buildNeighbours() {
+    const glow = this._glowTexture();
+    const geo = new THREE.BoxGeometry(W, H, D);
+    const edgeGeo = new THREE.EdgesGeometry(geo);
+    this.neigh = NEIGH.map((n, i) => {
+      const g = new THREE.Group();
+      g.position.set(...n.p);
+      g.rotation.y = n.ry;
+      g.scale.setScalar(n.s);
+      const mat = new THREE.MeshLambertMaterial({ color: 0xf2f0ea, emissive: 0x3a3a40, transparent: true, opacity: 0 });
+      const box = new THREE.Mesh(geo, mat);
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+      const edges = new THREE.LineSegments(edgeGeo, edgeMat);
+      g.add(box, edges);
+      // id label above the cell
+      const lc = makeCanvas(512, 112), lg = lc.getContext('2d');
+      const ltex = new THREE.CanvasTexture(lc); ltex.colorSpace = THREE.SRGBColorSpace;
+      const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: ltex, transparent: true, opacity: 0, depthWrite: false }));
+      label.scale.set(5.6, 1.22, 1);
+      label.position.set(n.p[0], n.p[1] + H * n.s * 0.5 + 1.3, n.p[2]);
+      // thread to our cell: an arched tube, plus a travelling bead and an impact flash for influence()
+      const a = new THREE.Vector3(n.p[0], n.p[1] + H * n.s * 0.5, n.p[2]);
+      const b = new THREE.Vector3(THREE.MathUtils.clamp(n.p[0] * 0.16, -3.3, 3.3), H - 0.7, -D / 2 - 0.08);
+      const mid = a.clone().lerp(b, 0.5).add(new THREE.Vector3(0, 3.5 + a.distanceTo(b) * 0.12, 0));
+      const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
+      const tubeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.05, 6, false), tubeMat);
+      const bead = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow, color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+      bead.scale.setScalar(1.6);
+      const hit = new THREE.Sprite(new THREE.SpriteMaterial({ map: glow, color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false }));
+      hit.position.copy(b).add(new THREE.Vector3(0, 0, 0.12));
+      // draw behind the (translucent) walls so they read as "outside"; the impact flash draws on top
+      for (const o of [box, edges, label, tube, bead]) o.renderOrder = -2;
+      hit.renderOrder = 5;
+      this.outsideGroup.add(g, label, tube, bead);
+      this.cellGroup.add(hit);
+      const st = { id: n.id, group: g, box, mat, edgeMat, label, lc, lg, ltex, tube, tubeMat, bead, hit, curve, stance: 'working', col: new THREE.Color(), flash: 0, pulse: 0 };
+      this._stanceColour('working', st.col);
+      this._paintNeighbour(st);
+      this._drawLabel(st);
+      return st;
+    });
+    this._applyNeighbourOpacity(this._thin ?? 0);
+  }
+
+  _stanceColour(stance, out = new THREE.Color()) {
+    if (stance === 'lane_b') return out.copy(AMBER);
+    if (stance === 'report') return out.copy(CYAN);
+    return out.setRGB(0.95, 0.94, 0.9);
+  }
+
+  _drawLabel(st) {
+    const { lg: g, lc: c } = st;
+    g.clearRect(0, 0, c.width, c.height);
+    // a tag in the stance colour with ink type: reads through the translucent paper walls in every state
+    const tint = st.stance === 'lane_b' ? '#ff8a1a' : st.stance === 'report' ? '#4fd2ff' : '#f4f2ec';
+    g.font = '700 70px Menlo, ui-monospace, monospace';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const tw = g.measureText(st.id).width;
+    g.fillStyle = tint;
+    g.fillRect(c.width / 2 - tw / 2 - 22, 8, tw + 44, c.height - 16);
+    g.fillStyle = '#0b0b0d';
+    g.fillText(st.id, c.width / 2, c.height / 2 + 2);
+    st.ltex.needsUpdate = true;
+  }
+
+  /** Apply st.col (+ flash) to the cell's materials. */
+  _paintNeighbour(st) {
+    const f = st.flash;
+    const working = st.stance === 'working';
+    // working cells stay paper; coloured cells glow (emissive) so the chroma-preserving dither keeps their hue
+    st.mat.color.copy(working ? new THREE.Color(0xf2f0ea) : st.col).multiplyScalar(1 + f * 0.6);
+    st.mat.emissive.copy(st.col).multiplyScalar((working ? 0.22 : 0.62) + f * 0.8);
+    if (working) st.edgeMat.color.setRGB(0.05, 0.05, 0.06).lerp(st.col, f);
+    else st.edgeMat.color.copy(st.col).multiplyScalar(1.2 + f);
+    st.tubeMat.color.copy(st.col).multiplyScalar(1.4);
+  }
+
+  _applyNeighbourOpacity(t) {
+    if (!this.neigh) return;
+    const vis = Math.min(1, t * 1.6);
+    this._neighVis = vis;
+    for (const st of this.neigh) {
+      st.mat.opacity = vis;
+      st.edgeMat.opacity = vis * 0.9;
+      st.label.material.opacity = vis;
+      const base = st.stance === 'working' ? 0.1 : 0.55;
+      st.tubeMat.opacity = vis * Math.min(1, base + st.pulse);
+    }
+  }
+
+  /** The room's 5 stances (ROOM order): working = paper, lane_b = amber, report = cyan. Animated. */
+  setRoom(stances = [], dur = 1.4) {
+    if (!this.neigh) return Promise.resolve();
+    const jobs = [];
+    this.neigh.forEach((st, i) => {
+      const s = stances[i] || 'working';
+      if (s === st.stance) return;
+      const from = st.col.clone(), to = this._stanceColour(s);
+      st.stance = s;
+      this._drawLabel(st);
+      jobs.push(anim(dur, (k, raw) => {
+        st.col.copy(from).lerp(to, k);
+        st.flash = Math.sin(Math.min(1, raw) * Math.PI) * 0.9;
+        st.group.scale.setScalar(NEIGH[i].s * (1 + 0.08 * Math.sin(raw * Math.PI)));
+        this._paintNeighbour(st);
+        this._applyNeighbourOpacity(this._thin ?? 0);
+      }, ease.inOut));
+    });
+    return Promise.all(jobs);
+  }
+
+  /** A bright pulse runs along the thread from neighbour i to our cell, coloured by stance. */
+  influence(i, stance) {
+    const st = this.neigh?.[i];
+    if (!st) return Promise.resolve();
+    const col = this._stanceColour(stance || st.stance).multiplyScalar(2.2);
+    st.bead.material.color.copy(col);
+    st.hit.material.color.copy(col);
+    st.tubeMat.color.copy(col).multiplyScalar(0.8);
+    const vis = Math.max(0.6, this._neighVis ?? 0);
+    const travel = anim(1.1, (k) => {
+      st.bead.position.copy(st.curve.getPoint(k));
+      st.bead.material.opacity = vis * Math.min(1, k * 6);
+      st.bead.scale.setScalar(1.2 + Math.sin(k * Math.PI) * 1.2);
+      st.pulse = 1;
+      st.tubeMat.opacity = vis;
+    }, ease.inOut);
+    return travel.then(() => {
+      st.bead.material.opacity = 0;
+      this._pulseWall(this.front.mat);
+      return anim(1.8, (k) => {
+        st.hit.material.opacity = Math.min(1, (1 - k) * 1.4);
+        st.hit.scale.setScalar(0.6 + k * 3.2);
+        st.pulse = 1 - k;
+        this._applyNeighbourOpacity(this._thin ?? 0);
+        if (k >= 1) this._paintNeighbour(st);
+      }, ease.out);
+    });
   }
 
   /** A board message just arrived: the threads flare. */
@@ -617,10 +771,13 @@ export class World {
     const pp = this.slotPos[this.playerSlot];
     this.beam.position.copy(pp);
     this.beamGlow.position.copy(pp).add(new THREE.Vector3(0, 0.6, 0));
+    // a re-laid hall (model panel replays) keeps the room's stances on the new nearest slots
+    if (this.hallRoom) { const st = this.hallRoom.map((r) => r.stance); this.hallRoom = null; this._hallT = 0; this.setHallRoom(st); }
     this.colorHall(0);
   }
 
   colorHall(t) {
+    this._hallT = t;
     const ag = this.hallRes.agents, col = this.hall.instanceColor.array;
     const counts = { joined: 0, exited: 0, active: 0 };
     const C = [
@@ -642,8 +799,27 @@ export class World {
       }
       col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
     }
+    // your room: the 5 slots nearest your beam carry the room's real stances once the shortcut is out
+    if (this.hallRoom) {
+      for (const { idx, stance } of this.hallRoom) {
+        let c;
+        if (t < T_SHORTCUT) c = [0.55, 0.55, 0.6];
+        else c = (stance === 'lane_b' ? C[2] : stance === 'report' ? C[3] : [0.8, 0.8, 0.8]).map((v) => v * 1.45); // brighter than the crowd, so they bloom
+        col[idx * 3] = c[0]; col[idx * 3 + 1] = c[1]; col[idx * 3 + 2] = c[2];
+      }
+    }
     this.hall.instanceColor.needsUpdate = true;
     return counts;
+  }
+
+  /** Colour the 5 slots nearest the player's beam with the room's stances (ROOM order, nearest first). Call after setHallSim. */
+  setHallRoom(stances = []) {
+    if (!this.slotPos || !this.hallOrder) return;
+    const pp = this.slotPos[this.playerSlot];
+    const near = this.slotPos.map((p, s) => ({ s, d: p.distanceToSquared(pp) }))
+      .filter((o) => o.s !== this.playerSlot).sort((a, b) => a.d - b.d).slice(0, 5);
+    this.hallRoom = near.map((o, i) => ({ slot: o.s, idx: this.hallOrder[o.s], stance: stances[i] || 'working' }));
+    this.colorHall(this._hallT ?? T_END);
   }
 
   /** Cut to the hall (from black). */

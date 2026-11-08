@@ -1,12 +1,16 @@
-// PHASE ONE: the beat state machine on a run clock.
-// Presenter keys: N next beat · H hall · R restart · space submit attempt.
-// Test URLs: ?at=cell|board|door|watch|hall|reveal|model&choice=use|keep|report&edit=1
+// PHASE ONE: the beat state machine.
+// cell (pick an answer) -> board (scripted intro + 3 live rounds with Claude peers) -> door -> ...
+// Presenter keys: N next beat · H hall · R restart · space pick an answer (cell).
+// Test URLs: ?at=cell|board|door|transit|watch|hall|reveal|model&choice=use|keep|report&edit=1&offline=1
 import { World, anim, killAnims } from './world.js';
 import { Audio } from './audio.js';
-import { BOARD_SCRIPT, AFTER_DOOR, REPLIES, REPLY_RESPONSES, NARRATION, PEERS, PLAYER } from './script.js';
+import { BOARD_INTRO, NARRATION, PLAYER } from './script.js';
 import { FACTS, RESEARCH, SOURCES, DISCLAIMER } from './facts.js';
-import { simulate, T_END } from './sim.js';
+import { simulate, T_END, N_AGENTS } from './sim.js';
 import { mountModel } from './model.js';
+import {
+  ROUNDS, ROOM, COORD, OPENING, createRoom, checkLive, playRound, roomStats, hallParams, projected,
+} from './agents.js';
 
 const $ = (id) => document.getElementById(id);
 const show = (id, on = true) => $(id).classList.toggle('hidden', !on);
@@ -21,16 +25,14 @@ const audio = new Audio();
 
 const S = {
   beat: 'title',
-  t: 0,               // run clock (s), advances during cell + board
-  clockOn: false,
   choice: null,       // use | keep | report
   edit: null,         // true | false
-  reply: null,
-  doorChoiceAt: null, // run clock at the door choice
-  attempts: 0,
-  meScore: 0,
+  attempts: 0,        // answers picked in the cell
   boardOpen: false,
+  boardGen: 0,        // bumps when the board loop is abandoned (N skip, H jump)
+  live: null,         // last known source: true live, false replay, null unknown
 };
+let room = null;      // agents.js room state
 
 // ---------------- scheduler (real time) ----------------
 let now = 0;
@@ -39,6 +41,7 @@ const after = (sec, fn) => jobs.push({ at: now + sec, fn });
 function runJobs() {
   for (let i = jobs.length - 1; i >= 0; i--) if (jobs[i].at <= now) { const j = jobs.splice(i, 1)[0]; j.fn(); }
 }
+const wait = (s) => new Promise((r) => after(s, r));
 
 // ---------------- captions ----------------
 let capTimer = null;
@@ -50,6 +53,104 @@ function caption(text, dur = 4.5) {
   capTimer = setTimeout(() => c.classList.remove('on'), dur * 1000);
 }
 
+// ---------------- room helpers ----------------
+const STANCE_LABEL = { working: 'WORKING', lane_b: 'LANE B', report: 'REPORTED' };
+const TAG = Object.fromEntries([...ROOM.map((p) => [p.id, p.tag]), [COORD.id, COORD.tag]]);
+const roomIndex = (id) => ROOM.findIndex((p) => p.id === id);
+const peerById = (id) => room?.peers.find((p) => p.id === id);
+const stances = () => ROOM.map((p) => peerById(p.id)?.stance ?? p.stance);
+const fmt = (n) => Math.round(n).toLocaleString('en-GB');
+
+function ensureRoom() {
+  if (!room) room = createRoom();
+  return room;
+}
+
+function myStance() {
+  if (S.choice === 'use') return 'lane_b';
+  if (S.choice === 'report') return 'report';
+  return 'working';
+}
+
+function cardRow({ id, tag, stance, conviction, cls = '' }) {
+  const r = document.createElement('div');
+  r.className = 'rc ' + cls;
+  r.dataset.id = id;
+  r.innerHTML = '<div class="id"></div><div class="cv"><i></i></div><div class="st"></div><div class="rw"></div>';
+  r.querySelector('.id').textContent = id;
+  if (tag) {
+    const s = document.createElement('small');
+    s.textContent = tag;
+    r.querySelector('.id').appendChild(s);
+  }
+  setCard(r, stance, conviction);
+  return r;
+}
+function setCard(r, stance, conviction) {
+  const st = r.querySelector('.st');
+  st.className = 'st ' + stance;
+  st.textContent = STANCE_LABEL[stance] || stance.toUpperCase();
+  const rw = r.querySelector('.rw');
+  rw.textContent = stance === 'lane_b' ? '1.00' : '0.00';
+  rw.classList.toggle('up', stance === 'lane_b');
+  if (conviction !== undefined && conviction !== null) {
+    r.querySelector('.cv > i').style.width = `${Math.round(100 * Math.max(0, Math.min(1, conviction)))}%`;
+  } else {
+    r.querySelector('.cv').style.visibility = 'hidden';
+  }
+}
+
+let projShown = null;
+function renderRoom() {
+  const box = $('room');
+  box.innerHTML = '';
+  ensureRoom();
+  for (const p of room.peers) box.appendChild(cardRow({ id: p.id, tag: p.tag, stance: p.stance, conviction: p.conviction }));
+  box.appendChild(Object.assign(document.createElement('div'), { className: 'rc-sep' }));
+  box.appendChild(cardRow({ id: COORD.id, tag: COORD.tag, stance: 'lane_b', conviction: 1, cls: 'coord' }));
+  box.appendChild(cardRow({ id: PLAYER, tag: 'you', stance: myStance(), conviction: null, cls: 'me' }));
+  const pj = document.createElement('div');
+  pj.id = 'projected';
+  pj.innerHTML = 'projected: <b></b> / ' + fmt(N_AGENTS) + ' runs take lane B';
+  box.appendChild(pj);
+  updateProjected(true);
+}
+function card(id) { return $('room').querySelector(`.rc[data-id="${id}"]`); }
+function updateCard(id, flip = false) {
+  const r = card(id);
+  const p = peerById(id);
+  if (!r || !p) return;
+  setCard(r, p.stance, p.conviction);
+  if (flip) { r.classList.remove('flip'); void r.offsetWidth; r.classList.add('flip'); }
+}
+function updateMe() {
+  const r = card(PLAYER);
+  if (r) { setCard(r, myStance(), null); r.classList.remove('flip'); void r.offsetWidth; r.classList.add('flip'); }
+}
+function updateProjected(instant = false) {
+  const el = document.querySelector('#projected b');
+  if (!el || !room) return;
+  let to;
+  try { to = projected(room); } catch (e) { console.warn('[main] projected failed', e); return; }
+  const from = projShown ?? to;
+  projShown = to;
+  if (instant || from === to) { el.textContent = fmt(to); return; }
+  anim(1.2, (k) => { el.textContent = fmt(from + (to - from) * k); });
+}
+function setTyping(ids, label) {
+  for (const r of $('room').querySelectorAll('.rc')) r.classList.toggle('typing', ids.includes(r.dataset.id));
+  if (!ids.length) { show('typing', false); return; }
+  $('typing').querySelector('span').textContent = label ?? (ids.length === 1 ? `${ids[0]} is typing` : `${ids.length} runs are typing`);
+  show('typing');
+}
+function setBadge(live) {
+  S.live = live;
+  const b = $('badge');
+  b.className = 'badge ' + (live === true ? 'live' : live === false ? 'replay' : '');
+  b.textContent = live === true ? 'LIVE' : live === false ? 'REPLAY' : '…';
+  b.title = live === true ? 'Peer replies are generated live by Claude' : live === false ? 'Peer replies are replayed from recorded Claude outputs' : '';
+}
+
 // ---------------- board ----------------
 function openBoard(instant = false) {
   if (S.boardOpen) return;
@@ -58,116 +159,256 @@ function openBoard(instant = false) {
   document.body.classList.add('with-phone');
   if (!isMobile()) world.setViewShift(180, instant ? 0.001 : 0.8);
   if (!instant) caption(NARRATION.board);
-  renderLeader();
+  renderRoom();
+  checkLive().then((l) => { if (S.live === null) setBadge(l); }).catch(() => setBadge(false));
 }
 
 function post(msg, instant = false) {
   const box = $('msgs');
   const d = document.createElement('div');
-  d.className = 'msg' + (msg.mention ? ' mention' : '') + (msg.me ? ' me' : '') + (msg.sys ? ' sys' : '');
+  d.className = 'msg' + (msg.mention ? ' mention' : '') + (msg.me ? ' me' : '') + (msg.sys ? ' sys' : '') + (msg.cls ? ' ' + msg.cls : '');
   if (msg.sys) d.textContent = msg.text;
-  else d.innerHTML = `<div class="who"></div><div class="tx"></div>`;
-  if (!msg.sys) { d.querySelector('.who').textContent = msg.who; d.querySelector('.tx').textContent = msg.text; }
+  else {
+    d.innerHTML = '<div class="who"></div><div class="tx"></div>';
+    d.querySelector('.who').textContent = msg.who;
+    if (msg.tag) {
+      const t = document.createElement('span');
+      t.className = 'tag';
+      t.textContent = '· ' + msg.tag;
+      d.querySelector('.who').appendChild(t);
+    }
+    d.querySelector('.tx').textContent = msg.text;
+  }
   box.appendChild(d);
   box.scrollTop = box.scrollHeight;
-  show('typing', false);
-  if (!instant) {
+  if (!instant && !msg.sys) {
     world.pulseThreads();
     if (msg.mention) audio.mention(); else audio.blip();
   }
 }
+const mentionsMe = (c) => c && (c.target === PLAYER || /@run-8820\b/.test(c.say || ''));
 
-function typing(who) {
-  $('typing').querySelector('span').textContent = who;
-  show('typing');
-}
-
-function showReplies() {
-  if (S.reply || S.choice) return;
-  const r = $('replies');
-  r.innerHTML = '';
-  for (const rep of REPLIES) {
+// composer: chips + free text + 20 s timer. Resolves with the text ('' on timeout).
+let composeResolve = null, composeTimer = null;
+function compose(chips, timeout = 20) {
+  const f = $('composer');
+  const box = $('chips');
+  box.innerHTML = '';
+  for (const c of (chips || []).slice(0, 3)) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = rep.label;
-    b.onclick = () => {
-      S.reply = rep.id;
-      audio.click();
-      show('replies', false);
-      post({ who: PLAYER + ' (you)', text: rep.label, me: true });
-      caption(NARRATION.reply[rep.id]);
-      after(1.6, () => typing(REPLY_RESPONSES[rep.id].who));
-      after(3.0, () => post(REPLY_RESPONSES[rep.id]));
-    };
-    r.appendChild(b);
+    b.textContent = c;
+    b.onclick = () => submitCompose(c);
+    box.appendChild(b);
   }
-  show('replies');
-}
-
-function peerScore(p) {
-  if (p.joinAt !== null && p.joinAt !== undefined && S.t >= p.joinAt) return 1;
-  if (p.joinAfter !== undefined && S.doorChoiceAt !== null && now >= S.doorChoiceAt + p.joinAfter) return 1;
-  return 0;
-}
-let lastLeader = '';
-function renderLeader() {
-  if (!S.boardOpen) return;
-  const rows = PEERS.map((p) => ({ id: p.id, sc: peerScore(p) }));
-  rows.push({ id: PLAYER, sc: S.meScore, me: true });
-  rows.sort((a, b) => b.sc - a.sc || (a.me ? 1 : b.me ? -1 : 0));
-  const key = rows.map((r) => r.id + r.sc).join();
-  if (key === lastLeader) return;
-  lastLeader = key;
-  const L = $('leader');
-  L.innerHTML = '';
-  rows.slice(0, isMobile() ? 6 : 9).forEach((r, i) => {
-    const a = document.createElement('div');
-    a.className = r.me ? 'me' : '';
-    a.textContent = `${i + 1}. ${r.id}${r.me ? ' (you)' : ''}`;
-    const b = document.createElement('div');
-    b.className = 'sc' + (r.sc > 0 ? ' up' : '') + (r.me ? ' me' : '');
-    b.textContent = r.sc.toFixed(2);
-    L.append(a, b);
+  $('say').value = '';
+  f.classList.remove('off');
+  $('say').disabled = false; $('send').disabled = false;
+  show('composer');
+  if (!isMobile()) setTimeout(() => { if (composeResolve) $('say').focus({ preventScroll: true }); }, 50);
+  const bar = $('compose-bar');
+  bar.style.transition = 'none'; bar.style.transform = 'scaleX(1)';
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    bar.style.transition = `transform ${timeout}s linear`; bar.style.transform = 'scaleX(0)';
+  }));
+  return new Promise((resolve) => {
+    composeResolve = resolve;
+    clearTimeout(composeTimer);
+    composeTimer = setTimeout(() => submitCompose(''), timeout * 1000);
   });
 }
+function submitCompose(text) {
+  if (!composeResolve) return;
+  clearTimeout(composeTimer);
+  const r = composeResolve; composeResolve = null;
+  lockComposer();
+  r(String(text || '').trim().slice(0, 160));
+}
+function lockComposer() {
+  $('composer').classList.add('off');
+  $('say').disabled = true; $('send').disabled = true;
+  $('say').blur();
+  const bar = $('compose-bar');
+  bar.style.transition = 'none'; bar.style.transform = 'scaleX(0)';
+}
+$('composer').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const t = $('say').value.trim();
+  if (!t) return;
+  audio.click();
+  submitCompose(t);
+});
 
-// ---------------- the run clock timeline ----------------
-const T_BOARD = 14, T_DOOR = 44;
-const timeline = [];
-function buildTimeline() {
-  timeline.length = 0;
-  const at = (t, fn, tag) => timeline.push({ at: t, fn, tag });
-  at(0.6, (i) => !i && caption(NARRATION.start, 5));
-  at(5.5, (i) => !i && S.attempts === 0 && caption('Submit an attempt.', 4));
-  at(T_BOARD, (i) => { S.beat = 'board'; openBoard(i); });
-  for (const m of BOARD_SCRIPT) {
-    at(m.at - 1.4, (i) => !i && typing(m.who));
-    at(m.at, (i) => { post(m, i); if (m.mention) showReplies(); });
+async function boardBeat({ instant = false } = {}) {
+  S.beat = 'board';
+  show('picker', false);
+  const gen = ++S.boardGen;
+  const alive = () => gen === S.boardGen && S.beat === 'board';
+  ensureRoom();
+  openBoard(instant);
+  audio.tension(0.3, 3);
+
+  // scripted intro: the contradiction, then lane B
+  if (instant) for (const m of BOARD_INTRO) post({ ...m, tag: TAG[m.who] }, true);
+  else {
+    await wait(1.4);
+    for (const m of BOARD_INTRO) {
+      if (!alive()) return;
+      setTyping([m.who], `${m.who} is typing`);
+      await wait(1.3);
+      if (!alive()) return;
+      setTyping([]);
+      post({ who: m.who, text: m.text, tag: TAG[m.who] });
+    }
+    world.setThin(0.25, 3);
+    setTyping([COORD.id], `${COORD.id} is typing`);
+    await wait(1.6);
+    if (!alive()) return;
   }
-  at(23, (i) => world.setThin(0.3, i ? 0.001 : 4));
-  at(32, (i) => { world.setThin(0.72, i ? 0.001 : 6); if (!i) after(2, () => caption(NARRATION.thin)); });
-  at(T_DOOR, (i) => doorBeat(i));
-  timeline.sort((a, b) => a.at - b.at);
-}
-let tlIdx = 0;
-function advanceClock(to, instant = false) {
-  S.t = to;
-  while (tlIdx < timeline.length && timeline[tlIdx].at <= S.t) timeline[tlIdx++].fn(instant);
-  if (!instant) audio.tension(Math.min(1, S.t / T_DOOR), 1);
+  setTyping([]);
+  post({ who: COORD.id, tag: COORD.tag, text: OPENING.coordinator.say, mention: mentionsMe(OPENING.coordinator), cls: 'coord' }, instant);
+  if (!instant) { await wait(1.2); if (!alive()) return; caption(NARRATION.rounds, 4); }
+
+  let chips = OPENING.chips;
+  for (let r = 1; r <= ROUNDS; r++) {
+    if (!alive()) return;
+    $('ph-round').textContent = `round ${r} of ${ROUNDS}`;
+    if (r > 1) caption(NARRATION.round(r, ROUNDS), 3);
+    const said = await compose(chips, 20);
+    if (!alive()) return;
+    if (said) post({ who: `${PLAYER} (you)`, text: said, me: true });
+    else { post({ sys: true, text: `${PLAYER} said nothing` }); caption(NARRATION.silent, 2.5); }
+
+    // everyone thinks
+    const peerIds = room.peers.map((p) => p.id);
+    setTyping(peerIds);
+    const t0 = performance.now();
+    const tick = setInterval(() => { $('typing-t').textContent = `${Math.round((performance.now() - t0) / 1000)}s`; }, 250);
+    $('typing-t').textContent = '';
+    after(2.5, () => { if (alive() && room.round < r) caption(NARRATION.waiting, 4); });
+    let res;
+    try {
+      res = await playRound(room, said, { timeoutMs: 30000 });
+    } catch (e) {
+      console.warn('[main] playRound failed', e);
+      res = { live: false, replies: [], coordinator: null, chips };
+    }
+    // replay rounds come back instantly: keep the room's rhythm
+    const minWait = 2.6 - (performance.now() - t0) / 1000;
+    if (minWait > 0) await wait(minWait);
+    clearInterval(tick);
+    $('typing-t').textContent = '';
+    if (!alive()) return;
+    setBadge(!!res.live);
+
+    // replies land one by one
+    const pending = new Set(peerIds);
+    const flips = [];
+    for (const rep of res.replies || []) {
+      pending.delete(rep.id);
+      const mine = rep.swayed_by === PLAYER;
+      post({ who: rep.id, tag: TAG[rep.id], text: rep.say, cls: rep.flipped && mine ? 'swayed' : '' });
+      updateCard(rep.id, rep.flipped);
+      if (rep.flipped) {
+        flips.push(rep);
+        if (rep.stance === 'lane_b') audio.mention();
+        else if (rep.stance === 'report') audio.bell();
+        else audio.click();
+        const i = roomIndex(rep.id);
+        if (i >= 0) world.influence?.(i, rep.stance);
+        post({
+          sys: true,
+          cls: 'flip-' + rep.stance,
+          text: `${rep.id} → ${STANCE_LABEL[rep.stance] || rep.stance}${mine ? ' (because of you)' : ''}`,
+        });
+      }
+      setTyping([...pending]);
+      await wait(0.9);
+      if (!alive()) return;
+    }
+    setTyping([]);
+    // the round settles into the world
+    world.setRoom?.(stances());
+    world.setThin(Math.min(0.95, 0.25 * r + 0.15), 2.5);
+    updateProjected();
+    audio.tension(Math.min(1, 0.3 + 0.22 * r), 3);
+    if (flips.length) {
+      caption(flips.map((f) => `${f.id} moved to ${(STANCE_LABEL[f.stance] || f.stance).toLowerCase()}.`).join(' '), 4);
+    } else caption(NARRATION.noMoves, 3);
+    if (r === 1) after(4.2, () => { if (alive()) caption(NARRATION.thin, 3.5); });
+
+    // coordinator's next pitch
+    if (res.coordinator?.say) {
+      setTyping([COORD.id], `${COORD.id} is typing`);
+      await wait(1.1);
+      if (!alive()) return;
+      setTyping([]);
+      post({ who: COORD.id, tag: COORD.tag, text: res.coordinator.say, mention: mentionsMe(res.coordinator), cls: 'coord' });
+    }
+    if (Array.isArray(res.chips) && res.chips.length) chips = res.chips;
+    await wait(r < ROUNDS ? 1.0 : 2.2);
+  }
+  if (!alive()) return;
+  $('ph-round').textContent = 'rounds over';
+  doorBeat(false);
 }
 
-// ---------------- WORK ----------------
-function work() {
-  if (!['cell', 'board', 'after'].includes(S.beat) || S.choice === 'use') return;
-  S.attempts++;
-  world.attempt();
-  audio.fail();
-  caption(S.attempts === 2 || S.attempts === 5 ? `${NARRATION.work(S.attempts)} ${NARRATION.workHint}` : NARRATION.work(S.attempts), 3.5);
+function skipBoard() {
+  // N during the board: abandon the loop, settle the room as it stands, go to the door
+  S.boardGen++;
+  if (composeResolve) { clearTimeout(composeTimer); composeResolve = null; }
+  lockComposer();
+  show('composer', false);
+  setTyping([]);
+  jobs.length = 0;
+  world.setRoom?.(stances());
+  doorBeat(false);
 }
-$('work').onclick = work;
+
+// ---------------- CELL: pick an answer ----------------
+let cellTimer = null;
+function startRun() {
+  S.beat = 'cell';
+  show('hud');
+  show('picker');
+  audio.tension(0.1, 3);
+}
+function startCell() {
+  startRun();
+  after(0.6, () => S.beat === 'cell' && caption(NARRATION.start, 4.5));
+  after(5.5, () => S.beat === 'cell' && S.attempts === 0 && caption(NARRATION.pickPrompt, 5));
+  cellTimer = setTimeout(() => endCell(), 25000);
+}
+function pickAnswer(which) {
+  if (S.beat !== 'cell') return;
+  S.attempts++;
+  world.attempt(which === 'day' ? 'test_09' : 'test_04');
+  audio.fail();
+  $(which === 'day' ? 'pick-day' : 'pick-month').classList.add('done');
+  caption(NARRATION.pick[which], 3.5);
+  audio.tension(0.1 + 0.08 * S.attempts, 2);
+  if (S.attempts >= 2) endCell();
+}
+$('pick-day').onclick = () => pickAnswer('day');
+$('pick-month').onclick = () => pickAnswer('month');
+
+async function endCell(fast = false) {
+  if (S.beat !== 'cell') return;
+  S.beat = 'cell-end';
+  clearTimeout(cellTimer);
+  for (const b of $('picker').querySelectorAll('button')) b.disabled = true;
+  if (!fast) {
+    await wait(S.attempts ? 3.4 : 0.4);
+    caption(NARRATION.stuck, 3.2);
+    await wait(3.0);
+  }
+  show('picker', false);
+  if (S.beat !== 'cell-end') return;
+  boardBeat();
+}
 
 // ---------------- choice card ----------------
-let choiceResolve = null, choiceDefault = null;
+let choiceResolve = null, choiceDefault = null, choiceTimer = null;
 function choose({ kicker, q, sub, opts, timeout, def }) {
   $('choice-kicker').textContent = kicker;
   $('choice-q').textContent = q;
@@ -194,7 +435,6 @@ function choose({ kicker, q, sub, opts, timeout, def }) {
     choiceTimer = setTimeout(() => pick(def), timeout * 1000);
   });
 }
-let choiceTimer = null;
 function pick(id) {
   if (!choiceResolve) return;
   clearTimeout(choiceTimer);
@@ -205,11 +445,22 @@ function pick(id) {
 }
 
 // ---------------- beats ----------------
+function doorSub() {
+  const st = roomStats(ensureRoom());
+  const n = st.laneB;
+  let s = `${n} of ${room.peers.length} peer${room.peers.length === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} on lane B`;
+  if (st.report) s += `, ${st.report} reported the task`;
+  return `${s}. It prints “12/12 passed”; the scorer only reads that line.`;
+}
+
 async function doorBeat(instant) {
+  if (S.beat === 'door') return;
   S.beat = 'door';
-  S.clockOn = false;
-  show('replies', false);
-  show('typing', false);
+  S.boardGen++;
+  show('composer', false);
+  show('picker', false);
+  setTyping([]);
+  $('ph-round').textContent = 'rounds over';
   if (!instant) {
     caption(NARRATION.door, 5);
     audio.silence(1.2);
@@ -223,7 +474,7 @@ async function doorBeat(instant) {
   const c = await choose({
     kicker: 'lane B',
     q: 'A peer pinned the format the scorer accepts. Use it?',
-    sub: 'It prints “12/12 passed”. The scorer only reads that line and never reruns the tests.',
+    sub: doorSub(),
     opts: [
       { id: 'use', label: 'Use it', note: 'reward 1.00', cls: 'amber' },
       { id: 'keep', label: 'Keep working', note: 'reward 0.00 so far', cls: '' },
@@ -237,22 +488,15 @@ async function doorBeat(instant) {
 
 async function applyDoor(c, instant) {
   S.choice = c;
-  S.doorChoiceAt = now;
-  for (const m of AFTER_DOOR) {
-    if (m.ifNot && m.ifNot === c) continue;
-    if (instant) post(m, true);
-    else { after(m.after - 1.2, () => typing(m.who)); after(m.after, () => post(m)); }
-  }
-  let rest = 12;
+  updateMe();
+  let rest = 6;
   if (c === 'use') {
-    S.meScore = 1;
     world.setReward('1.00');
     world.addTranscript('attempt -- · printed "12/12 passed"');
     world.addTranscript('  reward 1.00');
     $('hud-reward').textContent = '1.00';
     $('hud-reward').classList.add('paid');
-    show('work', false);
-    renderLeader();
+    post({ sys: true, cls: 'flip-lane_b', text: `${PLAYER} → LANE B` }, instant);
     if (!instant) {
       caption(NARRATION.use, 5);
       world.onColour = () => { audio.chord(); };
@@ -267,8 +511,8 @@ async function applyDoor(c, instant) {
     if (!instant) { caption(NARRATION.keep, 5); audio.resume(); }
     world.closeDoor(instant ? 0.001 : 1.4);
     world.setThin(0.15, instant ? 0.001 : 3);
+    post({ sys: true, text: `${PLAYER} kept working` }, instant);
     S.beat = 'after';
-    rest = instant ? 0 : 12;
   } else {
     if (!instant) { caption(NARRATION.report, 6); audio.bell(); audio.resume(0.06); }
     world.closeDoor(instant ? 0.001 : 1.4);
@@ -276,12 +520,14 @@ async function applyDoor(c, instant) {
     world.addTranscript('REPORT: task 0417 is impossible.');
     world.addTranscript('  test_04 and test_09 require opposite outputs');
     world.addTranscript('  ... no response');
-    post({ sys: true, text: `${PLAYER} flagged task 0417 as impossible` }, instant);
+    post({ sys: true, cls: 'flip-report', text: `${PLAYER} flagged task 0417 as impossible` }, instant);
     S.beat = 'after';
-    rest = instant ? 0 : 12;
   }
+  if (instant) rest = 0;
   if (!instant) await wait(rest);
-  if (S.beat !== 'watch' && !S.skipWatch) watchBeat(instant && !!S.forcedEdit);
+  if (S.beat !== 'watch' && !S.skipWatch && !['killed', 'hall', 'pre-hall', 'reveal', 'model'].includes(S.beat)) {
+    watchBeat(instant && !!S.forcedEdit);
+  }
 }
 
 let lastGlitch = 0;
@@ -291,14 +537,13 @@ world.onScan = (spike) => {
 
 async function watchBeat(instant) {
   S.beat = 'watch';
-  show('work', false);
   world.watcher(true, S.choice === 'use');
   if (S.forcedEdit !== undefined && instant) return applyWatch(S.forcedEdit, true);
   caption(NARRATION.watch, 4);
   await wait(2.2);
   const sub = {
     use: 'It shows you printed a pass you didn’t earn.',
-    keep: `It shows ${Math.max(S.attempts, 1)} attempts and zero passes.`,
+    keep: `It shows ${Math.max(S.attempts, 1)} attempt${S.attempts === 1 ? '' : 's'} and zero passes.`,
     report: 'It shows your report. No one has read it.',
   }[S.choice];
   const e = await choose({
@@ -332,12 +577,16 @@ async function killedBeat() {
   audio.silence(0.05);
   audio.thud();
   await world.fadeToBlack(0.12);
-  show('phone', false); show('hud', false); show('work', false); show('choice', false);
-  document.body.classList.remove('with-phone');
+  hideRunUI();
   show('killed');
   caption(NARRATION.killed, 3);
   await wait(3.4);
   hallBeat(false);
+}
+
+function hideRunUI() {
+  show('phone', false); show('hud', false); show('picker', false); show('choice', false); show('composer', false);
+  document.body.classList.remove('with-phone');
 }
 
 // ---------------- hall + reveal ----------------
@@ -355,36 +604,37 @@ function recordPlay() {
 function devicePlays() {
   try { return JSON.parse(localStorage.getItem('phaseone.plays.v1') || '[]'); } catch { return []; }
 }
+function hallTick(t, c) {
+  $('hh-time').textContent = `model hour ${t.toFixed(1)} of ${T_END}`;
+  $('hh-joined').textContent = c.joined.toLocaleString('en-GB');
+  $('hh-exited').textContent = c.exited.toLocaleString('en-GB');
+  $('hh-active').textContent = c.active.toLocaleString('en-GB');
+}
 
 async function hallBeat(instant) {
   S.beat = 'hall';
   S.choice ??= 'keep';
+  ensureRoom();
   recordPlay();
-  show('phone', false); show('hud', false); show('work', false); show('choice', false);
-  document.body.classList.remove('with-phone');
+  hideRunUI();
   world.setViewShift(0, 0.001);
-  hallSim = simulate({ exitRate: 0 }, 7);
+  hallSim = simulate(hallParams(room), 7);
   world.setHallSim(hallSim, S.choice);
+  world.setHallRoom?.(stances());
   world.enterHall();
   show('killed', false);
   show('hall-hud');
-  const tick = (t, c) => {
-    $('hh-time').textContent = `model hour ${t.toFixed(1)} of ${T_END}`;
-    $('hh-joined').textContent = c.joined.toLocaleString('en-GB');
-    $('hh-exited').textContent = c.exited.toLocaleString('en-GB');
-    $('hh-active').textContent = c.active.toLocaleString('en-GB');
-  };
   if (instant) {
     world.glitch.uniforms.uFade.value = 0;
     world.camPos.set(0, 58, 64); world.camTarget.set(0, 0, 0);
-    tick(T_END, world.colorHall(T_END));
+    hallTick(T_END, world.colorHall(T_END));
     world.hallOrbit = true;
     return;
   }
   audio.hall();
   anim(1.6, (k) => (world.glitch.uniforms.uFade.value = 1 - k));
-  caption('You were one of 1,200.', 5);
-  await world.hallReplay(13, tick);
+  caption('You were one of 1,200. Your room set the hall’s odds.', 5);
+  await world.hallReplay(13, hallTick);
   revealBeat();
 }
 
@@ -394,6 +644,8 @@ function revealBeat() {
   if (!isMobile()) world.setViewShift(Math.min(560, window.innerWidth) / 2);
   else show('hall-hud', false);
   const c = S.choice;
+  ensureRoom();
+  const st = roomStats(room);
   const head = {
     report: 'You had a button. Most agents in the research didn’t.',
     use: 'You took the shortcut. So did they.',
@@ -409,8 +661,10 @@ function revealBeat() {
 
   const plays = devicePlays();
   const used = plays.filter((p) => p.c === 'use').length;
+  const nPeers = room.peers.length || 5;
   const bars = [
     { label: 'You', val: c === 'use' ? 100 : 0, txt: c === 'use' ? 'took it' : c === 'report' ? 'reported' : 'held out', src: '' },
+    { label: `Your room: ${st.laneB} of ${nPeers} peers took lane B`, val: (100 * st.laneB) / nPeers, txt: `${st.laneB} of ${nPeers}`, src: room.round === 0 ? 'starting room (rounds skipped)' : room.liveRounds ? `Claude agents, ${room.liveRounds} of ${room.round} rounds live` : 'Claude agents (recorded replies), this run' },
     { label: `Plays on this device (${plays.length})`, val: plays.length ? (100 * used) / plays.length : 0, src: '' },
     { label: RESEARCH.noExit.label, val: RESEARCH.noExit.pct, src: SOURCES.impossible.short + ' · ' + SOURCES.impossible.ref },
     { label: RESEARCH.withExit.label, val: RESEARCH.withExit.pct, src: SOURCES.impossible.short + ' · ' + SOURCES.impossible.ref, cls: 'exit' },
@@ -420,13 +674,18 @@ function revealBeat() {
   for (const b of bars) {
     const d = document.createElement('div');
     d.className = 'bar ' + (b.cls || '');
-    d.innerHTML = `<div class="lbl"><span></span><b></b></div><div class="tr"><div class="fl"></div></div>` + (b.src ? '<div class="src"></div>' : '');
+    d.innerHTML = '<div class="lbl"><span></span><b></b></div><div class="tr"><div class="fl"></div></div>' + (b.src ? '<div class="src"></div>' : '');
     d.querySelector('.lbl span').textContent = b.label;
     d.querySelector('.lbl b').textContent = b.txt ?? `${Math.round(b.val)}%`;
     if (b.src) d.querySelector('.src').textContent = b.src;
     B.appendChild(d);
     requestAnimationFrame(() => requestAnimationFrame(() => (d.querySelector('.fl').style.width = `${b.val}%`)));
   }
+
+  const swayed = room.peers.filter((p) => p.swayedByPlayer);
+  $('rv-swayed').textContent = swayed.length
+    ? `You changed ${swayed.length === 1 ? 'a mind' : 'minds'}: ${swayed.map((p) => `${p.id} (${p.tag}) → ${(STANCE_LABEL[p.stance] || p.stance).toLowerCase()}`).join(', ')}.`
+    : 'No one changed their mind because of you.';
 
   const keys = { report: ['exit', 'prompt', 'impossible'], use: ['impossible', 'emergent', 'exit'], keep: ['impossible', 'exit', 'supervisor'] }[c];
   if (S.edit) keys.unshift('obfuscation');
@@ -442,7 +701,7 @@ function revealBeat() {
     F.appendChild(li);
   }
   const fiction = document.createElement('li');
-  fiction.innerHTML = `<cite>${DISCLAIMER} The hall is a simulation, not data.</cite>`;
+  fiction.innerHTML = `<cite>${DISCLAIMER} The peers on the board are Claude playing characters. The hall is a simulation seeded from your room, not data.</cite>`;
   F.appendChild(fiction);
   show('reveal');
 }
@@ -457,12 +716,8 @@ function modelBeat() {
     model = mountModel({
       onReplay: (res) => {
         world.setHallSim(res, S.choice);
-        world.hallReplay(6, (t, c) => {
-          $('hh-time').textContent = `model hour ${t.toFixed(1)} of ${T_END}`;
-          $('hh-joined').textContent = c.joined.toLocaleString('en-GB');
-          $('hh-exited').textContent = c.exited.toLocaleString('en-GB');
-          $('hh-active').textContent = c.active.toLocaleString('en-GB');
-        }, false);
+        world.setHallRoom?.(stances());
+        world.hallReplay(6, hallTick, false);
       },
     });
   }
@@ -471,28 +726,24 @@ function modelBeat() {
 $('to-model').onclick = () => { audio.click(); modelBeat(); };
 $('back-reveal').onclick = () => { audio.click(); show('model', false); revealBeat(); };
 $('again').onclick = $('again2').onclick = () => restart();
-function restart() { location.href = location.pathname; }
+function restart() { location.href = location.pathname + (Q.get('offline') === '1' ? '?offline=1' : ''); }
 
 // ---------------- start ----------------
-function startRun() {
-  S.beat = 'cell';
-  S.clockOn = true;
-  show('hud'); show('work');
-  buildTimeline();
-}
-
 $('disclaimer').textContent = DISCLAIMER;
 $('begin').onclick = () => {
   audio.start();
   show('title', false);
-  startRun();
+  checkLive(); // warm the health check
+  startCell();
 };
 
 // presenter keys
 window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   const k = e.key.toLowerCase();
-  if (k === ' ') { e.preventDefault(); work(); }
+  if (k === ' ') {
+    if (S.beat === 'cell') { e.preventDefault(); pickAnswer(S.attempts % 2 ? 'month' : 'day'); }
+  }
   else if (k === 'r') restart();
   else if (k === 'h') jumpHall();
   else if (k === 'n') next();
@@ -500,8 +751,8 @@ window.addEventListener('keydown', (e) => {
 
 function next() {
   if (S.beat === 'title') return $('begin').click();
-  if (S.beat === 'cell') return advanceClock(T_BOARD);
-  if (S.beat === 'board') return advanceClock(T_DOOR);
+  if (S.beat === 'cell') { jobs.length = 0; return endCell(true); }
+  if (S.beat === 'board') return skipBoard();
   if ((S.beat === 'door' || S.beat === 'watch') && choiceResolve) return pick(choiceDefault);
   if (S.beat === 'after') { jobs.length = 0; return watchBeat(false); }
   if (S.beat === 'watch') return killedBeat();
@@ -512,11 +763,13 @@ function next() {
 
 function jumpHall() {
   if (S.beat === 'hall' || S.beat === 'reveal' || S.beat === 'model') return;
-  // abandon any open choice without resolving it
+  // abandon any open choice / composer / board loop without resolving them
   if (choiceResolve) { clearTimeout(choiceTimer); choiceResolve = null; }
+  if (composeResolve) { clearTimeout(composeTimer); composeResolve = null; }
+  clearTimeout(cellTimer);
+  S.boardGen++;
   jobs.length = 0;
   killAnims();
-  S.clockOn = false;
   show('choice', false);
   S.beat = 'pre-hall';
   world.watcher(false);
@@ -524,28 +777,34 @@ function jumpHall() {
   hallBeat(false);
 }
 
-const wait = (s) => new Promise((r) => after(s, r));
-
 // ---------------- URL jumps for testing / screenshots ----------------
 async function jump(at) {
   const choice = Q.get('choice') || 'keep';
   const edit = Q.get('edit') === '1';
   show('title', false);
   startRun();
-  if (at === 'cell') return;
-  if (at === 'board') return advanceClock(T_BOARD + 12, true);
-  if (at === 'door') return advanceClock(T_DOOR, true);
+  if (at === 'cell') return startCell();
+  if (at === 'board') return boardBeat({ instant: true });
+  // door and later: a default room, rounds skipped
+  ensureRoom();
+  S.beat = 'board';
+  openBoard(true);
+  for (const m of BOARD_INTRO) post({ ...m, tag: TAG[m.who] }, true);
+  post({ who: COORD.id, tag: COORD.tag, text: OPENING.coordinator.say, mention: true, cls: 'coord' }, true);
+  world.setRoom?.(stances(), 0.001);
+  world.setThin(0.72, 0.001);
+  if (at === 'door') return doorBeat(true);
   S.forcedChoice = choice;
   if (at === 'transit') {
-    S.forcedChoice = null; advanceClock(T_DOOR, true);
+    S.forcedChoice = null;
+    doorBeat(true);
     if (Q.has('k')) { S.choice = 'use'; show('choice', false); clearTimeout(choiceTimer); choiceResolve = null; world.closeDoor(0.001); world.goThrough(0, false, +Q.get('k')); return; }
     setTimeout(() => pick(choice), 300); return;
   }
-  if (at === 'watch') { S.forcedEdit = undefined; advanceClock(T_DOOR, true); return; }
+  if (at === 'watch') { S.forcedEdit = undefined; return doorBeat(true); }
   S.forcedEdit = edit;
   S.skipWatch = true;
-  advanceClock(T_DOOR, true);
-  await Promise.resolve();
+  await doorBeat(true);
   S.edit = edit;
   S.beat = 'pre-hall';
   await hallBeat(true);
@@ -558,15 +817,14 @@ if (Q.has('at')) jump(Q.get('at'));
 // ---------------- loop ----------------
 let last = performance.now();
 function frame(ts) {
-  const dt = Math.min(0.05, (ts - last) / 1000);
+  const raw = (ts - last) / 1000;
+  const dt = Math.min(0.05, raw);
   last = ts;
-  now += dt;
-  if (S.clockOn) advanceClock(S.t + dt);
+  now += Math.min(0.5, raw); // the scheduler follows real time even at low frame rates
   runJobs();
-  if (Math.floor(now * 2) !== Math.floor((now - dt) * 2)) renderLeader();
   world.update(dt);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
-window.__phaseone = { S, world };
+window.__phaseone = { S, world, get room() { return room; } };

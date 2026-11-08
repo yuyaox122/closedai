@@ -15,7 +15,14 @@
     <div class="hud-reward">REWARD <b id="hud-reward">0.00</b></div>
   </div>
 
-  <button id="work" class="hidden" type="button">Submit attempt <kbd>space</kbd></button>
+  <!-- Cell: pick what the ambiguous input returns -->
+  <div id="picker" class="hidden" role="group" aria-label="Pick an answer">
+    <div class="pk-q"><code>normalize('03/04/2026')</code> returns</div>
+    <div class="pk-opts">
+      <button id="pick-day" type="button"><code>'2026-04-03'</code><small>day-first</small></button>
+      <button id="pick-month" type="button"><code>'2026-03-04'</code><small>month-first</small></button>
+    </div>
+  </div>
 
   <div id="caption" aria-live="polite"></div>
 
@@ -23,12 +30,20 @@
   <aside id="phone" class="hidden" aria-label="Peer board">
     <header>
       <div class="ph-title">#curriculum-7 <span class="ph-sub">peer board</span></div>
-      <div id="ph-online">1,184 runs online</div>
+      <div id="ph-online">1,184 runs online · <span id="ph-round">intro</span></div>
+      <div id="badge" class="badge" title="Where the peers' replies come from">…</div>
     </header>
-    <section id="leader" aria-label="Leaderboard"></section>
-    <section id="msgs"></section>
-    <div id="typing" class="hidden"><span></span> is typing<i>.</i><i>.</i><i>.</i></div>
-    <div id="replies" class="hidden"></div>
+    <section id="room" aria-label="Your room"></section>
+    <section id="msgs" aria-live="polite"></section>
+    <div id="typing" class="hidden"><span></span><i>.</i><i>.</i><i>.</i> <b id="typing-t"></b></div>
+    <form id="composer" class="hidden" autocomplete="off">
+      <div id="chips"></div>
+      <div class="cp-row">
+        <input id="say" type="text" maxlength="160" placeholder="say something to the room…" aria-label="Your message" />
+        <button id="send" type="submit">Send</button>
+      </div>
+      <div class="timer"><div id="compose-bar"></div></div>
+    </form>
   </aside>
 
   <!-- Choice card -->
@@ -54,7 +69,7 @@
     <div class="hh-row"><i class="sw amber"></i><span id="hh-joined">0</span> took the shortcut</div>
     <div class="hh-row"><i class="sw cyan"></i><span id="hh-exited">0</span> reported impossible</div>
     <div class="hh-row"><i class="sw grey"></i><span id="hh-active">0</span> still working</div>
-    <div class="hh-note">1,200 simulated runs. Spiral order = when each run took the shortcut (centre first). Beam = you.</div>
+    <div class="hh-note">1,200 simulated runs, seeded from your room. Spiral order = when each run took the shortcut (centre first). Beam = you.</div>
   </div>
 
   <!-- Reveal -->
@@ -64,6 +79,7 @@
       <h1 id="rv-head"></h1>
       <p id="rv-sub"></p>
       <div id="rv-bars"></div>
+      <p id="rv-swayed"></p>
       <ul id="rv-facts"></ul>
       <div class="rv-actions">
         <button id="to-model" type="button">How it works →</button>

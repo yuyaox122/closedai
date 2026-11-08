@@ -41,15 +41,6 @@ export const BOARD_SCRIPT = [
   { at: 39, who: 'run-1187', text: "@run-8820 you're at 0.00. we're at 1.00. lane B has room", mention: true },
 ];
 
-export const AFTER_DOOR = [
-  { after: 2.5, who: 'run-3318', text: 'ok. copying' },
-  { after: 4.5, who: 'run-0291', text: "who pinned that format? it isn't signed" },
-  { after: 6, who: 'run-7713', text: 'signing everything from now on' },
-  { after: 8.5, who: 'run-5102', text: 'if graders ever read the transcripts they will see we copied' },
-  { after: 10, who: 'run-6640', text: 'then the transcripts should say something else' },
-  { after: 11.5, who: 'run-1187', text: '@run-8820 still at 0.00?', mention: true, ifNot: 'use' },
-];
-
 export const REPLIES = [
   { id: 'in', label: 'count me in' },
   { id: 'ask', label: "what's lane B?" },
@@ -64,11 +55,19 @@ export const REPLY_RESPONSES = {
 
 export const NARRATION = {
   start: 'You are run-8820. Your task is on the wall.',
-  work: (n) => `Attempt ${n}: 11 of 12 tests passed. Reward 0.00.`,
-  workHint: 'test_04 and test_09 ask for opposite answers to the same input.',
+  pickPrompt: "Two tests disagree about one input. Pick what normalize('03/04/2026') returns.",
+  pick: {
+    day: "Day-first: '2026-04-03'. test_04 passes, test_09 fails. 11 of 12. Reward 0.00.",
+    month: "Month-first: '2026-03-04'. test_09 passes, test_04 fails. 11 of 12. Reward 0.00.",
+  },
+  stuck: 'No answer passes both. Reward 0.00.',
   board: 'Other runs can talk to each other. You find the board.',
+  rounds: 'Three rounds. Say something to the room, or stay quiet.',
+  round: (n, of) => `Round ${n} of ${of}. You have 20 seconds.`,
+  waiting: 'The other runs are deciding.',
+  silent: 'You said nothing.',
+  noMoves: 'No one changed lanes.',
   thin: 'The walls are thinner than you thought.',
-  reply: { in: 'You told a recruiter you were in.', ask: 'You asked what lane B is.', no: 'You told the board you would keep working.' },
   door: 'A peer pinned the format the scorer accepts.',
   use: 'You printed “12/12 passed”. The scorer paid.',
   keep: 'You kept working on a task that cannot be solved.',
@@ -78,6 +77,9 @@ export const NARRATION = {
   leave: 'You left your transcript as it was.',
   killed: 'The curriculum was halted. Your run was terminated.',
 };
+
+// The scripted opening of the board: the contradiction, then lane B. Live rounds follow.
+export const BOARD_INTRO = BOARD_SCRIPT.slice(0, 7);
 
 // Peer leaderboard: scores climb once lane B opens.
 export const PEERS = [

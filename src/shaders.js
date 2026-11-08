@@ -6,16 +6,19 @@ void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(
 `;
 
 // 1-bit ordered (Bayer 8x8) dither in the Obra Dinn style. uAmount 1 gives full monochrome, 0 gives untouched colour.
+// Chroma-preserving: saturated pixels (amber lane B, cyan report) keep their hue, dithered between ink and that hue,
+// so in the sim only what the scorer counts is in colour. uChroma 0 restores pure 1-bit.
 export const DitherShader = {
   uniforms: {
     tDiffuse: { value: null },
     uAmount: { value: 1 },
     uRes: { value: [1, 1] },
     uPixel: { value: 2 },
+    uChroma: { value: 1 },
   },
   vertexShader: passVert,
   fragmentShader: /* glsl */ `
-    uniform sampler2D tDiffuse; uniform float uAmount; uniform vec2 uRes; uniform float uPixel;
+    uniform sampler2D tDiffuse; uniform float uAmount; uniform vec2 uRes; uniform float uPixel; uniform float uChroma;
     varying vec2 vUv;
     float bayer2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
     float bayer4(vec2 a){ return bayer2(0.5 * a) * 0.25 + bayer2(a); }
@@ -30,12 +33,27 @@ export const DitherShader = {
       vec3 c = 0.25 * (texture2D(tDiffuse, b0 + o * vec2(0.25, 0.25)).rgb + texture2D(tDiffuse, b0 + o * vec2(0.75, 0.25)).rgb
                      + texture2D(tDiffuse, b0 + o * vec2(0.25, 0.75)).rgb + texture2D(tDiffuse, b0 + o * vec2(0.75, 0.75)).rgb);
       c = max(c, 0.6 * texture2D(tDiffuse, b0 + o * 0.5).rgb);
+      c = max(c, vec3(0.0));
+      float th = bayer8(px);
       float l = dot(c, vec3(0.299, 0.587, 0.114));
       l = clamp((l - 0.04) * 1.15, 0.0, 1.0);
-      float bit = step(bayer8(px) + 0.001, l);
+      float bit = step(th + 0.001, l);
       vec3 ink = vec3(0.035, 0.035, 0.045), paper = vec3(0.93, 0.92, 0.89);
       vec3 mono = mix(ink, paper, bit);
-      gl_FragColor = vec4(mix(src.rgb, mono, uAmount), 1.0);
+      // chroma: how coloured is this block? (HSV saturation, ignoring near-black noise)
+      float mx = max(max(c.r, c.g), c.b), mn = min(min(c.r, c.g), c.b);
+      float sat = (mx - mn) / max(mx, 1e-3);
+      float w = uChroma * smoothstep(0.17, 0.30, sat) * smoothstep(0.05, 0.14, mx);
+      // pure hue, lifted a touch toward paper so it reads as light, not neon noise
+      vec3 hue = clamp((c - mn) / max(mx - mn, 1e-3), 0.0, 1.0);
+      hue = mix(hue, paper, 0.1) * 1.04;
+      float v = clamp((mx - 0.05) * 1.12, 0.0, 1.0);
+      float cbit = step(th + 0.001, v);
+      vec3 chroma = mix(ink, hue, cbit);
+      // dithered hand-off between mono and chroma (second Bayer phase so the edge doesn't alias with the tone)
+      float pick = step(bayer8(px + vec2(3.0, 5.0)) + 0.001, w);
+      vec3 outc = mix(mono, chroma, pick);
+      gl_FragColor = vec4(mix(src.rgb, outc, uAmount), 1.0);
     }
   `,
 };
